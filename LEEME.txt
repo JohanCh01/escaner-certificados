@@ -10,7 +10,7 @@ USAR:
   La ventana muestra la dirección, por ejemplo  http://192.168.1.50:5050
   Ábrela desde la app (o desde Chrome) con el celular en el Wi-Fi de la empresa.
 
-  1. Elige el proveedor (la lista se arma desde la misma app).
+  1. Elige el proveedor (la lista sale del archivo proveedores.txt).
   2. "+"  -> toma la foto de la hoja y revisa las 4 esquinas.
   3. "Guardar hoja". El nombre del certificado se lee solo del encabezado
      de la hoja 1; se puede corregir a mano.
@@ -22,16 +22,33 @@ DÓNDE QUEDA CADA PDF:
               CERTIFICADO DE ANÁLISIS N° 2026-004512.pdf
 
 CALENDARIO (botón de fecha, arriba a la derecha):
-  - Al abrir la app siempre está en el día de hoy.
+  - Al abrir la app siempre está en el día de hoy. "Guardados hoy" empieza
+    vacío cada día; lo de días anteriores sigue en sus carpetas y se ve
+    eligiendo la fecha.
   - Al elegir otro día se ven los certificados de esa fecha por proveedor,
     y lo que se guarde va a esa fecha hasta volver a "hoy".
   - Los días con un punto verde tienen certificados.
 
-PROVEEDORES:
-  - En la app: Proveedor -> escribe el nombre -> "Agregar a la lista".
-  - "Quitar proveedores" los saca de la lista (no borra los PDF guardados).
-  - La lista vive en proveedores.json, al lado de servidor.py, y la comparten
-    todos los celulares. También se puede editar ese archivo a mano.
+PROVEEDORES (archivo proveedores.txt, al lado de servidor.py):
+  - Se crea solo la primera vez que se ejecuta el servidor.
+  - Ábrelo con el Bloc de notas y escribe un proveedor por línea. Guarda.
+  - No hay que reiniciar nada: la app lee el archivo cada vez que se abre
+    la lista. Se muestran en orden alfabético y sin repetidos.
+  - Las líneas que empiezan con # se ignoran.
+  - Quitar un proveedor del archivo no borra los PDF ya guardados.
+
+CALIDAD DE LA IMAGEN (automática al guardar cada hoja):
+  - Endereza la hoja, quita sombras, deja el papel blanco y realza las letras.
+  - Si por los bordes asoma algo que no es la hoja (suelo, mesa, la sombra
+    del canto), lo rellena de blanco. Solo actúa en una franja pegada al borde
+    (3 % del lado corto); si queda mucho suelo, corrige las esquinas.
+  - En config.json:  "nitidez" (1.0 normal, 1.5 más marcado, 0.5 más suave)
+    y "limpiar_bordes" (true / false).
+  - Ojo: si un certificado tiene una franja de color decorativa pegada al
+    borde, también se blanquea. Para ese caso usa "limpiar_bordes": false
+    o el filtro "Sin retoque".
+  - Lo que más mejora la nitidez es la foto: buena luz, celular quieto y la
+    hoja llenando la pantalla.
 
 LECTURA DEL ENCABEZADO (nombre del certificado):
   - Por defecto la hace esta PC (paquete rapidocr-onnxruntime). Nada sale de

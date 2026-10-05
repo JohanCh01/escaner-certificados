@@ -1,5 +1,6 @@
 # Datos locales del servidor (no se suben a GitHub)
 config.json
+proveedores.txt
 proveedores.json
 _temporal/
 _pendientes/

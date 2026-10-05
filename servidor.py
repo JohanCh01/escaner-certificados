@@ -35,7 +35,7 @@ BASE = Path(__file__).resolve().parent
 TEMPORAL = BASE / "_temporal"      # hojas en proceso (se borran al crear el PDF)
 PENDIENTES = BASE / "_pendientes"  # PDFs que no se pudieron copiar a ningún destino
 ARCHIVO_CONFIG = BASE / "config.json"
-ARCHIVO_PROVEEDORES = BASE / "proveedores.json"   # lista que se administra desde la app
+ARCHIVO_PROVEEDORES = BASE / "proveedores.txt"   # un proveedor por línea; se edita a mano
 
 
 # --------------------------------------------------------------------------
@@ -62,6 +62,10 @@ CONFIG_INICIAL = {
     # "A4": si la hoja mide parecido a un A4, se entrega con la proporción exacta de A4
     # (corrige la deformación de las fotos tomadas inclinadas). "libre": no se ajusta.
     "formato_hoja": "A4",
+    # Nitidez de las letras: 1.0 es lo normal, 1.5 más marcado, 0.5 más suave, 0 sin realce.
+    "nitidez": 1.0,
+    # Rellena de blanco lo que asoma por los bordes y no es papel (suelo, mesa, sombra del canto).
+    "limpiar_bordes": True,
     # El nombre del certificado se lee del encabezado de la hoja 1. Vacío: lo lee esta PC
     # (nada sale de la empresa). Con una clave de Gemini: lo lee Gemini (envía la hoja a Google).
     "gemini_api_key": "",
@@ -71,12 +75,16 @@ CONFIG_INICIAL = {
 
 def cargar_config():
     config = dict(CONFIG_INICIAL)
+    guardado = None
     if ARCHIVO_CONFIG.exists():
         try:
-            config.update(json.loads(ARCHIVO_CONFIG.read_text(encoding="utf-8")))
+            guardado = json.loads(ARCHIVO_CONFIG.read_text(encoding="utf-8"))
+            config.update(guardado)
         except Exception as error:
             print(f"[!] config.json tiene un error y se ignoró: {error}")
-    else:
+            return config
+    # Primera vez, o una versión nueva trajo opciones que el archivo todavía no tiene
+    if guardado is None or any(clave not in guardado for clave in CONFIG_INICIAL):
         ARCHIVO_CONFIG.write_text(
             json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
     return config
@@ -204,24 +212,61 @@ def _fondo(canal):
     return cv2.resize(fondo, (ancho, alto), interpolation=cv2.INTER_LINEAR)
 
 
-def mejorar(hoja, filtro):
+def _limpiar_bordes(plana, porcentaje=3.0):
+    """Rellena de blanco lo que asoma por los bordes y no es papel: suelo, mesa o la sombra
+    del canto de la hoja. Solo actúa en una franja pegada al borde (3 % del lado corto) y
+    nunca toca nada que entre hacia el interior de la hoja."""
+    alto, ancho = plana.shape[:2]
+    gris = cv2.cvtColor(np.clip(plana, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY)
+    no_papel = (gris < 205).astype(np.uint8)
+    no_papel = cv2.morphologyEx(no_papel, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    franja = max(8, int(round(min(alto, ancho) * porcentaje / 100.0)))
+    if alto <= 2 * franja + 2 or ancho <= 2 * franja + 2:
+        return plana
+    cantidad, etiquetas, datos, _ = cv2.connectedComponentsWithStats(no_papel, connectivity=8)
+    if cantidad <= 1:
+        return plana
+    interiores = np.unique(etiquetas[franja:alto - franja, franja:ancho - franja])
+    del_borde = np.unique(np.concatenate(
+        [etiquetas[0], etiquetas[-1], etiquetas[:, 0], etiquetas[:, -1]]))
+    quitar = np.zeros(cantidad, dtype=bool)
+    quitar[del_borde] = True                 # manchas que tocan el borde de la imagen
+    largo = np.maximum(datos[:, cv2.CC_STAT_WIDTH], datos[:, cv2.CC_STAT_HEIGHT])
+    quitar |= largo >= 0.15 * min(alto, ancho)   # líneas largas junto al borde (canto de la hoja)
+    quitar[interiores] = False               # lo que entra a la hoja es contenido: se respeta
+    quitar[0] = False
+    if not quitar.any():
+        return plana
+    mascara = cv2.dilate(quitar[etiquetas].astype(np.uint8), np.ones((9, 9), np.uint8))
+    plana = plana.copy()
+    plana[mascara > 0] = 255.0
+    return plana
+
+
+def mejorar(hoja, filtro, nitidez=1.0, limpiar=True):
     """filtro: 'color' (papel blanco, sellos y firmas a color), 'gris' u 'original'."""
     if filtro == "original":
         return hoja
+    nitidez = float(np.clip(nitidez, 0.0, 2.5))
+    # Quita el grano de las fotos con poca luz sin emborronar los trazos
+    hoja = cv2.bilateralFilter(hoja, 5, 12, 2)
     datos = hoja.astype(np.float32)
     canales = [np.clip(datos[:, :, i] / _fondo(hoja[:, :, i]) * 255.0, 0, 255)
                for i in range(3)]
     plana = cv2.merge(canales)
+    if limpiar:
+        plana = _limpiar_bordes(plana)
 
-    # Nitidez suave
-    borrosa = cv2.GaussianBlur(plana, (0, 0), 1.2)
-    plana = cv2.addWeighted(plana, 1.6, borrosa, -0.6, 0)
+    # Nitidez en dos escalas: el trazo fino de cada letra y el contraste alrededor
+    fina = cv2.GaussianBlur(plana, (0, 0), 1.0)
+    amplia = cv2.GaussianBlur(plana, (0, 0), 3.0)
+    plana = plana + 1.2 * nitidez * (plana - fina) + 0.4 * nitidez * (plana - amplia)
 
     # Niveles: el papel a blanco puro y la tinta más oscura
     gris = cv2.cvtColor(np.clip(plana, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY)
     negro = float(np.clip(np.percentile(gris, 1), 0, 90)) * 0.8
-    blanco = 232.0 if filtro == "color" else 225.0
-    plana = np.clip((plana - negro) / (blanco - negro) * 255.0, 0, 255).astype(np.uint8)
+    tono = np.clip((plana - negro) / (226.0 - negro), 0, 1)
+    plana = (np.power(tono, 1.0 + 0.15 * nitidez) * 255.0).astype(np.uint8)
 
     if filtro == "gris":
         return cv2.cvtColor(plana, cv2.COLOR_BGR2GRAY)
@@ -388,24 +433,50 @@ def leer_imagen(ruta):
 
 
 # --------------------------------------------------------------------------
-# Proveedores (lista compartida por todos los celulares)
+# Proveedores: archivo de texto proveedores.txt, un proveedor por línea
 # --------------------------------------------------------------------------
-_candado_proveedores = threading.Lock()
+PLANTILLA_PROVEEDORES = (
+    "# Lista de proveedores del escáner de certificados.\n"
+    "# Escribe un proveedor por línea y guarda el archivo: la app toma los cambios\n"
+    "# la próxima vez que se abra la lista, sin reiniciar el servidor.\n"
+    "# Las líneas que empiezan con # no se muestran.\n"
+    "\n"
+)
 
 
 def leer_proveedores():
+    if not ARCHIVO_PROVEEDORES.exists():
+        anteriores = []
+        viejo = BASE / "proveedores.json"        # lista de la versión anterior de la app
+        if viejo.exists():
+            try:
+                anteriores = [p for p in json.loads(viejo.read_text(encoding="utf-8"))
+                              if isinstance(p, str)]
+            except (OSError, ValueError):
+                pass
+        try:
+            ARCHIVO_PROVEEDORES.write_text(
+                PLANTILLA_PROVEEDORES + "".join(p + "\n" for p in anteriores),
+                encoding="utf-8", newline="\r\n")   # saltos de línea de Windows (Bloc de notas)
+        except OSError:
+            return anteriores
     try:
-        lista = json.loads(ARCHIVO_PROVEEDORES.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        crudo = ARCHIVO_PROVEEDORES.read_bytes()
+    except OSError:
         return []
-    limpios = {limpiar_nombre(p, 60, para_carpeta=False) for p in lista if isinstance(p, str)}
-    return sorted((p for p in limpios if p), key=str.casefold)
-
-
-def guardar_proveedores(lista):
-    ARCHIVO_PROVEEDORES.write_text(
-        json.dumps(sorted(lista, key=str.casefold), indent=2, ensure_ascii=False),
-        encoding="utf-8")
+    try:
+        texto = crudo.decode("utf-8-sig")
+    except UnicodeDecodeError:                   # Bloc de notas antiguo (ANSI)
+        texto = crudo.decode("cp1252", "replace")
+    vistos, lista = set(), []
+    for linea in texto.splitlines():
+        nombre = limpiar_nombre(linea, 60, para_carpeta=False)
+        if not limpiar_nombre(nombre) or nombre.startswith("#"):
+            continue
+        if nombre.casefold() not in vistos:
+            vistos.add(nombre.casefold())
+            lista.append(nombre)
+    return sorted(lista, key=str.casefold)
 
 
 # --------------------------------------------------------------------------
@@ -446,30 +517,6 @@ def api_config():
 @app.get("/api/proveedores")
 def api_proveedores():
     return jsonify({"proveedores": leer_proveedores()})
-
-
-@app.post("/api/proveedores")
-def api_proveedor_nuevo():
-    nombre = limpiar_nombre(request.get_json(force=True).get("nombre"), 60, para_carpeta=False)
-    if not limpiar_nombre(nombre):
-        abort(400, "Escribe el nombre del proveedor")
-    with _candado_proveedores:
-        lista = leer_proveedores()
-        existente = next((p for p in lista if p.casefold() == nombre.casefold()), None)
-        if existente is None:
-            lista.append(nombre)
-            guardar_proveedores(lista)
-        return jsonify({"ok": True, "nombre": existente or nombre,
-                        "proveedores": leer_proveedores()})
-
-
-@app.delete("/api/proveedores")
-def api_proveedor_quitar():
-    nombre = str(request.get_json(force=True).get("nombre") or "")
-    with _candado_proveedores:
-        lista = [p for p in leer_proveedores() if p.casefold() != nombre.casefold()]
-        guardar_proveedores(lista)
-        return jsonify({"ok": True, "proveedores": lista})
 
 
 # --------------------------------------------------------------------------
@@ -518,7 +565,7 @@ def api_procesar():
                          CONFIG.get("formato_hoja", "A4"))
     except Exception as error:
         abort(400, f"No se pudo procesar: {error}")
-    hoja = mejorar(hoja, filtro)
+    hoja = mejorar(hoja, filtro, CONFIG.get("nitidez", 1.0), bool(CONFIG.get("limpiar_bordes", True)))
     giro = int(cuerpo.get("rotar", 0)) % 360
     if giro == 90:
         hoja = cv2.rotate(hoja, cv2.ROTATE_90_CLOCKWISE)
@@ -969,7 +1016,7 @@ if __name__ == "__main__":
         print(f"     - {destino}")
     print("       ordenados como  año / fecha / proveedor / certificado.pdf")
     print(f"  Lectura del encabezado: {lectura}")
-    print(f"  Proveedores cargados: {len(leer_proveedores())}")
+    print(f"  Proveedores: {len(leer_proveedores())}  (se editan en {ARCHIVO_PROVEEDORES.name})")
     print("  Para detener: Ctrl + C")
     print("=" * 66)
     app.run(host="0.0.0.0", port=puerto, threaded=True)

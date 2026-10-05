@@ -34,10 +34,10 @@
   .cabecera img { width: 44px; height: 44px; flex: none; filter: drop-shadow(0 3px 6px rgba(0,0,0,.3)); }
   .cabecera h1 { margin: 0; font-size: 19px; line-height: 1.15; font-weight: 700; letter-spacing: -.2px; flex: 1; }
   .btn-fecha {
-    display: flex; align-items: center; gap: 8px; flex: none; padding: 9px 12px; border-radius: 12px;
-    background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.28); font-weight: 650; font-size: 14.5px;
+    display: grid; place-items: center; flex: none; width: 46px; height: 46px; border-radius: 14px;
+    background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.28);
   }
-  .btn-fecha svg { width: 18px; height: 18px; }
+  .btn-fecha svg { width: 23px; height: 23px; }
   .btn-fecha.otro-dia { background: #fff; color: var(--bosque); border-color: #fff; }
 
   main { max-width: 720px; margin: -18px auto 0; padding: 0 16px 150px; }
@@ -169,8 +169,6 @@
   }
   .opcion span { flex: 1; overflow-wrap: anywhere; }
   .opcion.elegida span { font-weight: 700; color: var(--hoja-osc); }
-  .opcion.nueva span { color: var(--hoja-osc); font-weight: 650; }
-  .opcion .quitar { color: var(--laser); font-weight: 700; font-size: 14px; padding: 6px 8px; }
   .pie-panel { display: flex; justify-content: space-between; align-items: center; padding-top: 12px; font-size: 14px; color: var(--suave); }
   .pie-panel button { color: var(--hoja-osc); font-weight: 700; padding: 6px 0; }
 
@@ -260,7 +258,6 @@
     <h1>Escáner de certificados</h1>
     <button class="btn-fecha" id="btnFecha" aria-label="Elegir fecha">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
-      <span id="textoFecha">Hoy</span>
     </button>
   </div>
 </header>
@@ -319,11 +316,10 @@
       <h2>Proveedor</h2>
       <button class="redondo" data-cerrar aria-label="Cerrar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
-    <input type="text" id="buscarProveedor" autocomplete="off" placeholder="Buscar o escribir uno nuevo">
+    <input type="text" id="buscarProveedor" autocomplete="off" placeholder="Buscar proveedor">
     <div class="lista" id="listaProveedores"></div>
     <div class="pie-panel">
       <span id="cuentaProveedores"></span>
-      <button id="btnEditarLista">Quitar proveedores</button>
     </div>
   </div>
 </div>
@@ -424,7 +420,7 @@ let fecha = hoy;                    // fecha elegida en el calendario; al abrir 
 let proveedores = [];
 let motorIA = "";
 let leyendo = false;
-let ajuste = null, vistaIndice = -1, editandoLista = false;
+let ajuste = null, vistaIndice = -1;
 let mesVisto = { anio: 0, mes: 0 };
 
 function nuevaSesion() {
@@ -441,7 +437,6 @@ function fechaLocal(d) {
 }
 function partesFecha(f) { const [a, m, d] = f.split("-").map(Number); return { a, m, d }; }
 function fechaLarga(f) { const p = partesFecha(f); return `${p.d} de ${MESES[p.m - 1]} de ${p.a}`; }
-function fechaCorta(f) { const p = partesFecha(f); return `${p.d} ${MESES[p.m - 1].slice(0, 3)}`; }
 function sinTildes(texto) { return texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 function plural(n, uno, varios) { return n + " " + (n === 1 ? uno : varios); }
 
@@ -525,7 +520,7 @@ function negrita(texto) { const b = document.createElement("b"); b.textContent =
 
 function pintarFecha() {
   const esHoy = fecha === hoy;
-  $("textoFecha").textContent = esHoy ? "Hoy, " + fechaCorta(fecha) : fechaCorta(fecha) + " " + partesFecha(fecha).a;
+  $("btnFecha").setAttribute("aria-label", esHoy ? "Elegir fecha (ahora: hoy)" : "Elegir fecha (ahora: " + fechaLarga(fecha) + ")");
   $("btnFecha").classList.toggle("otro-dia", !esHoy);
   $("otraFecha").classList.toggle("visible", !esHoy);
   $("textoOtraFecha").textContent = "Estás en el " + fechaLarga(fecha) + ". Lo que guardes irá a esa fecha.";
@@ -566,68 +561,33 @@ async function cargarDia() {
   }
 }
 
-// ---------- Proveedores ----------
+// ---------- Proveedores (la lista se escribe en proveedores.txt, en la PC) ----------
 function pintarProveedores() {
-  const texto = $("buscarProveedor").value.trim();
-  const filtro = sinTildes(texto);
+  const filtro = sinTildes($("buscarProveedor").value.trim());
   const lista = $("listaProveedores");
   lista.textContent = "";
-  const visibles = proveedores.filter(p => sinTildes(p).includes(filtro));
-  visibles.forEach(p => {
+  proveedores.filter(p => sinTildes(p).includes(filtro)).forEach(p => {
     const fila = document.createElement("button");
     fila.className = "opcion" + (p === estado.proveedor ? " elegida" : "");
     const nombre = document.createElement("span"); nombre.textContent = p; fila.appendChild(nombre);
-    if (editandoLista) {
-      const quitar = document.createElement("span"); quitar.className = "quitar"; quitar.textContent = "Quitar";
-      quitar.style.flex = "none"; fila.appendChild(quitar);
-      fila.onclick = () => quitarProveedor(p);
-    } else {
-      fila.onclick = () => elegirProveedor(p);
-    }
+    fila.onclick = () => { estado.proveedor = p; cerrarVelo("veloProveedor"); pintar(); };
     lista.appendChild(fila);
   });
-  if (texto && !editandoLista && !proveedores.some(p => sinTildes(p) === filtro)) {
-    const fila = document.createElement("button"); fila.className = "opcion nueva";
-    const nombre = document.createElement("span"); nombre.textContent = "Agregar «" + texto + "» a la lista";
-    fila.appendChild(nombre);
-    fila.onclick = () => agregarProveedor(texto);
-    lista.appendChild(fila);
-  }
   if (!lista.children.length) {
     lista.innerHTML = '<p class="nada"></p>';
-    lista.firstChild.textContent = proveedores.length ? "Ningún proveedor coincide."
-      : "La lista está vacía. Escribe el nombre del primer proveedor arriba para agregarlo.";
+    lista.firstChild.textContent = proveedores.length
+      ? "Ningún proveedor coincide. Si falta, agrégalo en el archivo proveedores.txt de la PC."
+      : "La lista está vacía. Escribe los proveedores en el archivo proveedores.txt de la PC, uno por línea.";
   }
-  $("cuentaProveedores").textContent = plural(proveedores.length, "proveedor", "proveedores");
-  $("btnEditarLista").textContent = editandoLista ? "Listo" : "Quitar proveedores";
-  $("btnEditarLista").hidden = proveedores.length === 0;
-}
-function elegirProveedor(nombre) {
-  estado.proveedor = nombre;
-  cerrarVelo("veloProveedor"); pintar();
-}
-async function agregarProveedor(nombre) {
-  try {
-    const r = await enviar("/api/proveedores", { nombre });
-    proveedores = r.proveedores; elegirProveedor(r.nombre);
-  } catch (e) { aviso("No se pudo agregar", e.message, "error"); }
-}
-async function quitarProveedor(nombre) {
-  if (!confirm("¿Quitar «" + nombre + "» de la lista? Los certificados ya guardados no se borran.")) return;
-  try {
-    const r = await enviar("/api/proveedores", { nombre }, "DELETE");
-    proveedores = r.proveedores;
-    if (estado.proveedor === nombre) estado.proveedor = "";
-    pintarProveedores(); pintar();
-  } catch (e) { aviso("No se pudo quitar", e.message, "error"); }
+  $("cuentaProveedores").textContent = proveedores.length ? plural(proveedores.length, "proveedor", "proveedores") : "";
 }
 $("btnProveedor").onclick = async () => {
-  editandoLista = false; $("buscarProveedor").value = "";
+  $("buscarProveedor").value = "";
   pintarProveedores(); abrirVelo("veloProveedor");
+  // Se vuelve a leer cada vez: así aparecen al instante los que se agreguen al archivo
   try { proveedores = (await api("/api/proveedores")).proveedores; pintarProveedores(); } catch (e) {}
 };
 $("buscarProveedor").oninput = pintarProveedores;
-$("btnEditarLista").onclick = () => { editandoLista = !editandoLista; pintarProveedores(); };
 
 // ---------- Calendario ----------
 async function pintarCalendario() {
@@ -677,12 +637,26 @@ $("mesSiguiente").onclick = () => moverMes(1);
 $("btnHoy").onclick = () => elegirFecha(hoy);
 $("btnVolverHoy").onclick = () => elegirFecha(hoy);
 
+// Si la app quedó abierta de un día para otro, "hoy" pasa solo al día nuevo
+async function revisarDia() {
+  try {
+    const config = await api("/api/config");
+    if (config.hoy === hoy) return;
+    const estabaEnHoy = fecha === hoy;
+    hoy = config.hoy;
+    if (estabaEnHoy) fecha = hoy;
+    await cargarDia();
+  } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) revisarDia(); });
+setInterval(revisarDia, 5 * 60 * 1000);
+
 // ---------- Tomar foto ----------
 async function prepararFoto(archivo) {
-  // Reduce a 3200 px y corrige la orientación: sube más rápido sin perder calidad de escaneo
+  // Limita a 4000 px (una foto de 12 MP completa) y corrige la orientación
   try {
     const mapa = await createImageBitmap(archivo, { imageOrientation: "from-image" });
-    const factor = Math.min(1, 3200 / Math.max(mapa.width, mapa.height));
+    const factor = Math.min(1, 4000 / Math.max(mapa.width, mapa.height));
     const lienzo = document.createElement("canvas");
     lienzo.width = Math.round(mapa.width * factor);
     lienzo.height = Math.round(mapa.height * factor);
@@ -919,6 +893,7 @@ $("btnPDF").onclick = async () => {
     return;
   }
   cargando("Guardando el PDF…");
+  await revisarDia();
   try {
     const r = await enviar("/api/pdf", { sesion: estado.sesion, paginas: estado.paginas.map(p => p.id),
       proveedor: estado.proveedor, nombre: estado.nombre, fecha });
