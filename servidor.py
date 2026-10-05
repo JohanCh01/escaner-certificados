@@ -5,36 +5,37 @@ Escáner de certificados de materiales
 Servidor que corre en una PC de la red de la empresa. Los celulares entran
 desde Chrome a  http://IP-DE-LA-PC:5050 , toman la foto de cada hoja y el
 servidor la endereza, la limpia, arma el PDF y lo guarda en las carpetas
-configuradas en config.json.
+configuradas en config.json, ordenado como  año / fecha / proveedor / certificado.pdf
 
 Uso (Git Bash):
     pip install -r requirements.txt
     python servidor.py
 """
 import base64
+import importlib.util
 import json
 import re
 import shutil
 import socket
+import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import uuid
 import zlib
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, Response, abort, jsonify, request, send_file
+from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 
 BASE = Path(__file__).resolve().parent
 TEMPORAL = BASE / "_temporal"      # hojas en proceso (se borran al crear el PDF)
 PENDIENTES = BASE / "_pendientes"  # PDFs que no se pudieron copiar a ningún destino
 ARCHIVO_CONFIG = BASE / "config.json"
-
-MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
-         "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+ARCHIVO_PROVEEDORES = BASE / "proveedores.json"   # lista que se administra desde la app
 
 
 # --------------------------------------------------------------------------
@@ -53,8 +54,7 @@ CONFIG_INICIAL = {
     # Carpetas donde se guarda cada PDF. Puedes poner varias: una local y
     # carpetas compartidas de otras PCs, por ejemplo "\\\\PC-CALIDAD2\\Certificados".
     "carpetas_destino": [str(escritorio() / "Certificados de Materiales")],
-    # Subcarpetas dentro de cada destino. Variables: {anio} {mes} {dia} {proveedor}
-    "subcarpetas": "{anio}/{mes}",
+    # Dentro de cada destino se ordena siempre como: año / fecha / proveedor / certificado.pdf
     "puerto": 5050,
     # Tamaño del lado largo de cada hoja en píxeles (2480 = A4 a ~210 dpi).
     "lado_maximo_px": 2480,
@@ -62,8 +62,8 @@ CONFIG_INICIAL = {
     # "A4": si la hoja mide parecido a un A4, se entrega con la proporción exacta de A4
     # (corrige la deformación de las fotos tomadas inclinadas). "libre": no se ajusta.
     "formato_hoja": "A4",
-    # Opcional: lectura automática de los datos del certificado con Gemini.
-    # Si se deja vacío la app funciona igual, solo sin el botón de IA.
+    # El nombre del certificado se lee del encabezado de la hoja 1. Vacío: lo lee esta PC
+    # (nada sale de la empresa). Con una clave de Gemini: lo lee Gemini (envía la hoja a Google).
     "gemini_api_key": "",
     "gemini_modelo": "gemini-3.5-flash",
 }
@@ -317,10 +317,47 @@ def validar_id(pagina):
     return pagina
 
 
-def limpiar_nombre(texto, maximo=80):
-    texto = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", str(texto or ""))
-    texto = re.sub(r"\s+", " ", texto).strip()
-    return texto[:maximo].strip()
+def limpiar_nombre(texto, maximo=90, para_carpeta=True):
+    """Quita lo que Windows no acepta en nombres de archivo o carpeta."""
+    texto = re.sub(r"\s*/\s*", "-", str(texto or ""))          # 000873 / 2026 -> 000873-2026
+    texto = re.sub(r'[\\:*?"<>|\r\n\t]+', " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()[:maximo].strip()
+    # Windows no acepta nombres que terminen en punto ("S.A.C." se guarda como "S.A.C")
+    return texto.rstrip(" .") if para_carpeta else texto
+
+
+def validar_fecha(texto):
+    """Fecha AAAA-MM-DD; si viene vacía se usa el día de hoy."""
+    if not texto:
+        return date.today()
+    try:
+        return datetime.strptime(str(texto), "%Y-%m-%d").date()
+    except ValueError:
+        abort(400, "Fecha inválida")
+
+
+def carpeta_dia(destino, fecha):
+    """Estructura fija: destino / año / fecha / proveedor / certificado.pdf"""
+    return Path(destino) / f"{fecha:%Y}" / f"{fecha:%Y-%m-%d}"
+
+
+def nombre_seguro(texto):
+    """Para leer archivos ya guardados: solo un nombre simple, nunca una ruta."""
+    texto = str(texto or "")
+    if not texto or texto != Path(texto).name or texto.startswith(".") or "\\" in texto:
+        abort(400, "Nombre inválido")
+    return texto
+
+
+def destino_de_lectura():
+    """Primera carpeta destino disponible (de ahí se lee lo ya escaneado)."""
+    for destino in CONFIG["carpetas_destino"]:
+        try:
+            if Path(destino).is_dir():
+                return Path(destino)
+        except OSError:
+            continue
+    return None
 
 
 def ruta_libre(carpeta, nombre):
@@ -351,7 +388,28 @@ def leer_imagen(ruta):
 
 
 # --------------------------------------------------------------------------
-# Rutas
+# Proveedores (lista compartida por todos los celulares)
+# --------------------------------------------------------------------------
+_candado_proveedores = threading.Lock()
+
+
+def leer_proveedores():
+    try:
+        lista = json.loads(ARCHIVO_PROVEEDORES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    limpios = {limpiar_nombre(p, 60, para_carpeta=False) for p in lista if isinstance(p, str)}
+    return sorted((p for p in limpios if p), key=str.casefold)
+
+
+def guardar_proveedores(lista):
+    ARCHIVO_PROVEEDORES.write_text(
+        json.dumps(sorted(lista, key=str.casefold), indent=2, ensure_ascii=False),
+        encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# Páginas básicas
 # --------------------------------------------------------------------------
 @app.get("/")
 def inicio():
@@ -360,34 +418,63 @@ def inicio():
     return respuesta
 
 
+@app.get("/recursos/<nombre>")
+def recursos(nombre):
+    return send_from_directory(BASE / "recursos", nombre, max_age=3600)
+
+
 @app.get("/manifest.json")
 def manifiesto():
     return jsonify({
         "name": "Escáner de certificados", "short_name": "Escáner",
         "start_url": "/", "display": "standalone",
-        "background_color": "#f4f5f2", "theme_color": "#1f3d2b",
-        "icons": [{"src": "/icono.png", "sizes": "192x192", "type": "image/png"}],
+        "background_color": "#0e3b2a", "theme_color": "#0e3b2a",
+        "icons": [{"src": "/recursos/icono-192.png", "sizes": "192x192", "type": "image/png"},
+                  {"src": "/recursos/icono-512.png", "sizes": "512x512", "type": "image/png"}],
     })
-
-
-@app.get("/icono.png")
-def icono():
-    lienzo = np.full((192, 192, 3), (43, 61, 31), np.uint8)
-    cv2.rectangle(lienzo, (56, 38), (136, 154), (255, 255, 255), -1)
-    for y in (66, 86, 106, 126):
-        cv2.line(lienzo, (70, y), (122, y), (43, 61, 31), 5)
-    _, datos = cv2.imencode(".png", lienzo)
-    return Response(datos.tobytes(), mimetype="image/png")
 
 
 @app.get("/api/config")
 def api_config():
     return jsonify({
-        "ia": bool(CONFIG.get("gemini_api_key")),
+        "ia": motor_ia(),
         "destinos": CONFIG["carpetas_destino"],
+        "hoy": date.today().isoformat(),
     })
 
 
+@app.get("/api/proveedores")
+def api_proveedores():
+    return jsonify({"proveedores": leer_proveedores()})
+
+
+@app.post("/api/proveedores")
+def api_proveedor_nuevo():
+    nombre = limpiar_nombre(request.get_json(force=True).get("nombre"), 60, para_carpeta=False)
+    if not limpiar_nombre(nombre):
+        abort(400, "Escribe el nombre del proveedor")
+    with _candado_proveedores:
+        lista = leer_proveedores()
+        existente = next((p for p in lista if p.casefold() == nombre.casefold()), None)
+        if existente is None:
+            lista.append(nombre)
+            guardar_proveedores(lista)
+        return jsonify({"ok": True, "nombre": existente or nombre,
+                        "proveedores": leer_proveedores()})
+
+
+@app.delete("/api/proveedores")
+def api_proveedor_quitar():
+    nombre = str(request.get_json(force=True).get("nombre") or "")
+    with _candado_proveedores:
+        lista = [p for p in leer_proveedores() if p.casefold() != nombre.casefold()]
+        guardar_proveedores(lista)
+        return jsonify({"ok": True, "proveedores": lista})
+
+
+# --------------------------------------------------------------------------
+# Hojas en proceso
+# --------------------------------------------------------------------------
 @app.get("/api/sesion/<sesion>")
 def api_sesion(sesion):
     carpeta = carpeta_sesion(sesion)
@@ -448,6 +535,16 @@ def api_procesar():
     return jsonify({"ok": True, **info})
 
 
+def _miniatura(jpg_o_imagen, lado=420):
+    imagen = jpg_o_imagen
+    if isinstance(imagen, (bytes, bytearray)):
+        imagen = cv2.imdecode(np.frombuffer(imagen, dtype=np.uint8), cv2.IMREAD_COLOR)
+    factor = float(lado) / max(imagen.shape[:2])
+    imagen = cv2.resize(imagen, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+    _, datos = cv2.imencode(".jpg", imagen, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return Response(datos.tobytes(), mimetype="image/jpeg")
+
+
 @app.get("/api/pagina/<sesion>/<pagina>.jpg")
 def api_pagina(sesion, pagina):
     carpeta = carpeta_sesion(sesion)
@@ -456,11 +553,7 @@ def api_pagina(sesion, pagina):
     if not ruta.exists():
         abort(404)
     if request.args.get("mini"):
-        imagen = leer_imagen(ruta)
-        factor = 420.0 / max(imagen.shape[:2])
-        imagen = cv2.resize(imagen, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
-        _, datos = cv2.imencode(".jpg", imagen, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        return Response(datos.tobytes(), mimetype="image/jpeg")
+        return _miniatura(leer_imagen(ruta))
     return send_file(ruta, mimetype="image/jpeg")
 
 
@@ -473,14 +566,20 @@ def api_borrar(sesion, pagina):
     return jsonify({"ok": True})
 
 
+# --------------------------------------------------------------------------
+# Guardar el PDF:  destino / año / fecha / proveedor / certificado.pdf
+# --------------------------------------------------------------------------
 @app.post("/api/pdf")
 def api_pdf():
-    """Une las hojas en un PDF y lo copia a cada carpeta destino."""
     cuerpo = request.get_json(force=True)
     carpeta = carpeta_sesion(cuerpo.get("sesion"))
     ids = [validar_id(p) for p in cuerpo.get("paginas", [])]
     if not ids:
         abort(400, "No hay hojas para el PDF")
+    proveedor = limpiar_nombre(cuerpo.get("proveedor"), 60)
+    if not proveedor:
+        abort(400, "Elige un proveedor antes de guardar")
+    fecha = validar_fecha(cuerpo.get("fecha"))
 
     paginas = []
     for pagina in ids:
@@ -490,33 +589,14 @@ def api_pdf():
         paginas.append({"jpg": jpg.read_bytes(),
                         **json.loads(info.read_text(encoding="utf-8"))})
 
-    ahora = datetime.now()
-    proveedor = limpiar_nombre(cuerpo.get("proveedor"), 60)
-    nombre = limpiar_nombre(cuerpo.get("nombre"), 90)
-    partes = [p for p in (proveedor, nombre) if p]
-    if partes:
-        archivo = " - ".join(partes + [ahora.strftime("%Y-%m-%d")])
-    else:
-        archivo = "Certificado " + ahora.strftime("%Y-%m-%d %H%M%S")
-
+    archivo = limpiar_nombre(cuerpo.get("nombre"), 90) \
+        or "Certificado " + datetime.now().strftime("%H%M%S")
     pdf = crear_pdf(paginas, archivo)
-
-    variables = {"anio": ahora.strftime("%Y"),
-                 "mes": f"{ahora.month:02d} - {MESES[ahora.month - 1]}",
-                 "dia": ahora.strftime("%d"),
-                 "proveedor": proveedor or "Sin proveedor"}
-    try:
-        sub = str(CONFIG.get("subcarpetas", "")).format(**variables)
-    except (KeyError, IndexError, ValueError):
-        sub = f"{variables['anio']}/{variables['mes']}"
-    # Windows no acepta carpetas que terminen en punto o espacio
-    sub_partes = [limpiar_nombre(p).rstrip(" .") for p in re.split(r"[\\/]+", sub)]
-    sub_partes = [p for p in sub_partes if p]
 
     guardados, errores = [], []
     for destino in CONFIG["carpetas_destino"]:
         try:
-            final = Path(destino).joinpath(*sub_partes)
+            final = carpeta_dia(destino, fecha) / proveedor
             final.mkdir(parents=True, exist_ok=True)
             ruta = ruta_libre(final, archivo)
             ruta.write_bytes(pdf)
@@ -527,39 +607,279 @@ def api_pdf():
     if not guardados:
         # Ningún destino respondió: el PDF no se pierde, queda junto al servidor
         PENDIENTES.mkdir(exist_ok=True)
-        ruta = ruta_libre(PENDIENTES, archivo)
+        ruta = ruta_libre(PENDIENTES, f"{fecha:%Y-%m-%d} - {proveedor} - {archivo}")
         ruta.write_bytes(pdf)
         return jsonify({"ok": False, "pendiente": str(ruta), "errores": errores,
                         "archivo": ruta.name}), 507
 
     shutil.rmtree(carpeta, ignore_errors=True)
-    print(f"[PDF] {Path(guardados[0]).name}  ({len(paginas)} hojas, {len(pdf) // 1024} KB)")
-    return jsonify({"ok": True, "archivo": Path(guardados[0]).name, "hojas": len(paginas),
-                    "kb": len(pdf) // 1024, "guardados": guardados, "errores": errores})
+    final = Path(guardados[0])
+    print(f"[PDF] {fecha:%Y-%m-%d} / {proveedor} / {final.name}  "
+          f"({len(paginas)} hojas, {len(pdf) // 1024} KB)")
+    return jsonify({"ok": True, "archivo": final.name, "hojas": len(paginas),
+                    "kb": len(pdf) // 1024, "fecha": fecha.isoformat(),
+                    "proveedor": proveedor, "errores": errores})
 
 
 # --------------------------------------------------------------------------
-# IA opcional (Gemini): lee los datos del certificado para proponer el nombre
+# Consultar lo ya escaneado (calendario)
 # --------------------------------------------------------------------------
-INSTRUCCION_IA = (
-    "Esta imagen es un certificado de un material (certificado de calidad, de análisis, "
-    "de conformidad o similar). Extrae los datos y responde SOLO un JSON con estas claves: "
-    '"proveedor" (empresa que emite el certificado o fabrica el material), '
-    '"material" (nombre corto del producto o material), '
-    '"numero_certificado", "lote", "fecha" (formato AAAA-MM-DD). '
-    "Copia los valores tal como aparecen en el documento. Si un dato no aparece o no se "
-    'lee con claridad, deja esa clave como "". No inventes nada.'
+def _hojas_de_pdf(ruta):
+    try:
+        with open(ruta, "rb") as archivo:
+            cabecera = archivo.read(600)
+    except OSError:
+        return 0
+    encontrado = re.search(rb"/Count (\d+)", cabecera)
+    return int(encontrado.group(1)) if encontrado else 0
+
+
+@app.get("/api/dia")
+def api_dia():
+    """Certificados guardados en una fecha, agrupados por proveedor."""
+    fecha = validar_fecha(request.args.get("fecha"))
+    destino = destino_de_lectura()
+    proveedores = []
+    carpeta = carpeta_dia(destino, fecha) if destino else None
+    if carpeta is not None and carpeta.is_dir():
+        for sub in sorted((p for p in carpeta.iterdir() if p.is_dir()),
+                          key=lambda p: p.name.casefold()):
+            archivos = [{"nombre": pdf.name, "hojas": _hojas_de_pdf(pdf),
+                         "kb": pdf.stat().st_size // 1024}
+                        for pdf in sorted(sub.glob("*.pdf"), key=lambda p: p.stat().st_mtime)]
+            if archivos:
+                proveedores.append({"nombre": sub.name, "archivos": archivos})
+    return jsonify({"fecha": fecha.isoformat(), "proveedores": proveedores,
+                    "total": sum(len(p["archivos"]) for p in proveedores)})
+
+
+@app.get("/api/mes")
+def api_mes():
+    """Días del mes que tienen certificados (para marcarlos en el calendario)."""
+    try:
+        anio, mes = int(request.args.get("anio")), int(request.args.get("mes"))
+        date(anio, mes, 1)
+    except (TypeError, ValueError):
+        abort(400, "Mes inválido")
+    destino = destino_de_lectura()
+    dias = []
+    carpeta = destino / f"{anio:04d}" if destino else None
+    if carpeta is not None and carpeta.is_dir():
+        prefijo = f"{anio:04d}-{mes:02d}-"
+        for sub in carpeta.iterdir():
+            if sub.is_dir() and sub.name.startswith(prefijo) \
+                    and next(sub.glob("*/*.pdf"), None) is not None:
+                dias.append(sub.name)
+    return jsonify({"dias": sorted(dias)})
+
+
+@app.get("/api/guardado")
+def api_guardado():
+    """Devuelve una hoja (imagen) de un PDF ya guardado, para verlo en el celular."""
+    fecha = validar_fecha(request.args.get("fecha"))
+    proveedor = nombre_seguro(request.args.get("proveedor"))
+    archivo = nombre_seguro(request.args.get("archivo"))
+    if not archivo.lower().endswith(".pdf"):
+        abort(400, "Nombre inválido")
+    try:
+        numero = int(request.args.get("n", 0))
+    except ValueError:
+        abort(400, "Hoja inválida")
+    destino = destino_de_lectura()
+    ruta = carpeta_dia(destino, fecha) / proveedor / archivo if destino else None
+    if ruta is None or not ruta.is_file():
+        abort(404, "No se encontró el archivo")
+    pdf = ruta.read_bytes()
+    imagenes = list(re.finditer(rb"/Filter /DCTDecode /Length (\d+) >>\nstream\n", pdf))
+    if not 0 <= numero < len(imagenes):
+        abort(404, "Este PDF no se puede mostrar aquí; ábrelo desde la PC")
+    inicio = imagenes[numero].end()
+    jpg = pdf[inicio:inicio + int(imagenes[numero].group(1))]
+    if request.args.get("mini"):
+        return _miniatura(jpg)
+    return Response(jpg, mimetype="image/jpeg")
+
+
+# --------------------------------------------------------------------------
+# IA: lee el encabezado de la hoja 1 para proponer el nombre del certificado
+#   - "local":  OCR que corre en esta PC (rapidocr-onnxruntime). Nada sale de la empresa.
+#   - "gemini": si config.json tiene gemini_api_key. Lee mejor (tildes, criterio), pero
+#               envía la imagen de la hoja a Google.
+# --------------------------------------------------------------------------
+PALABRAS_TITULO = (
+    "CERTIFICADO", "CERTIFICATE", "CERTIFICACION", "CERTIFICATION", "ANALISIS", "ANALYSIS",
+    "CALIDAD", "QUALITY", "CONFORMIDAD", "CONFORMITY", "COA", "FICHATECNICA", "DECLARACION",
+    "DECLARATION", "INFORME", "REPORT", "CONSTANCIA", "GARANTIA", "HOJADESEGURIDAD",
+)
+PATRON_NUMERO = re.compile(
+    r"(?:\bN\s?[°ºo]\.?|\bN\.|\bNro\.?|\bNumber|\bN[uú]m(?:ero)?\.?|\bC[oó]digo|\bCode|\bFolio|#)"
+    r"\s*[:.]?\s*"
+    r"([A-Z0-9][A-Z0-9.\-]*(?:\s?/\s?\d+)?)", re.I)
+
+_ocr = None
+_candado_ocr = threading.Lock()
+
+
+def motor_ia():
+    if CONFIG.get("gemini_api_key"):
+        return "gemini"
+    if importlib.util.find_spec("rapidocr_onnxruntime") is not None:
+        return "local"
+    return ""
+
+
+def _motor_ocr():
+    global _ocr
+    if _ocr is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _ocr = RapidOCR()
+    return _ocr
+
+
+def _normalizar(texto):
+    sin_tildes = unicodedata.normalize("NFD", str(texto or "").upper())
+    return "".join(c for c in sin_tildes if c.isalnum() and ord(c) < 128)
+
+
+def _separar_palabras(recorte):
+    """Devuelve los tramos (x inicial, x final) de cada palabra de una línea de texto."""
+    gris = cv2.cvtColor(recorte, cv2.COLOR_BGR2GRAY)
+    alto = gris.shape[0]
+    _, tinta = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    if tinta.mean() > 127:                       # texto claro sobre fondo oscuro
+        tinta = 255 - tinta
+    ocupada = (tinta > 0).sum(axis=0) > max(1, int(0.04 * alto))
+    columnas = np.flatnonzero(ocupada)
+    if len(columnas) == 0:
+        return [], 0
+    x0, x1 = int(columnas[0]), int(columnas[-1]) + 1
+    huecos, inicio = [], None
+    for x in range(x0, x1):
+        if not ocupada[x]:
+            if inicio is None:
+                inicio = x
+        elif inicio is not None:
+            huecos.append((inicio, x))
+            inicio = None
+    if not huecos:
+        return [(x0, x1)], 0
+    # Un hueco es "espacio entre palabras" si es bastante más ancho que el hueco entre letras
+    umbral = max(0.17 * alto, 1.9 * float(np.median([b - a for a, b in huecos])))
+    tramos, inicio = [], x0
+    for a, b in huecos:
+        if b - a >= umbral:
+            tramos.append((inicio, a))
+            inicio = b
+    tramos.append((inicio, x1))
+    return tramos, umbral
+
+
+def _con_espacios(motor, cabecera, linea):
+    """El OCR suele pegar las palabras; aquí se recuperan los espacios de una línea."""
+    y0, y1 = max(0, linea["y0"] - 4), linea["y1"] + 4
+    x0, x1 = max(0, linea["x0"] - 4), linea["x1"] + 4
+    recorte = cabecera[y0:y1, x0:x1]
+    if recorte.size == 0:
+        return linea["texto"].strip()
+    tramos, umbral = _separar_palabras(recorte)
+    if len(tramos) <= 1:
+        return linea["texto"].strip()
+    margen = int(max(2, min(6, umbral / 2)))
+    palabras = []
+    for a, b in tramos:
+        trozo = recorte[:, max(0, a - margen):b + margen]
+        salida, _ = motor(trozo, use_det=False, use_cls=False)
+        # un tramo puede traer más de una palabra si el OCR vio un espacio dentro
+        palabras += str(salida[0][0]).split() if salida else []
+    original = " ".join(linea["texto"].split())
+    if len(palabras) <= len(original.split()):
+        return original                       # la lectura de la línea ya traía los espacios
+    junto = original.replace(" ", "")
+    if sum(len(p) for p in palabras) == len(junto):
+        # Mismas letras: se usa la lectura de la línea completa (más fiable) con estos cortes
+        partes, i = [], 0
+        for palabra in palabras:
+            partes.append(junto[i:i + len(palabra)])
+            i += len(palabra)
+        return " ".join(partes)
+    return " ".join(palabras)
+
+
+def leer_encabezado_local(imagen, proveedor=""):
+    motor = _motor_ocr()
+    cabecera = imagen[: int(imagen.shape[0] * 0.45)]
+    if cabecera.ndim == 2:
+        cabecera = cv2.cvtColor(cabecera, cv2.COLOR_GRAY2BGR)
+    if cabecera.shape[1] > 1600:
+        factor = 1600.0 / cabecera.shape[1]
+        cabecera = cv2.resize(cabecera, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+
+    with _candado_ocr:
+        resultado, _ = motor(cabecera, use_cls=False)
+        lineas = []
+        for caja, texto, confianza in resultado or []:
+            puntos = np.array(caja, dtype=np.float32)
+            lineas.append({
+                "texto": str(texto), "conf": float(confianza),
+                "x0": int(puntos[:, 0].min()), "x1": int(puntos[:, 0].max()),
+                "y0": int(puntos[:, 1].min()), "y1": int(puntos[:, 1].max()),
+            })
+        lineas.sort(key=lambda l: (l["y0"], l["x0"]))
+        prov = _normalizar(proveedor)
+
+        def es_candidata(linea):
+            norma = _normalizar(linea["texto"])
+            letras = sum(c.isalpha() for c in norma)
+            if linea["conf"] < 0.6 or letras < 5 or letras < 0.6 * len(norma):
+                return False
+            return not (len(prov) >= 4 and (prov in norma or norma in prov))
+
+        candidatas = [l for l in lineas if es_candidata(l)]
+        con_clave = [l for l in candidatas
+                     if any(p in _normalizar(l["texto"]) for p in PALABRAS_TITULO)]
+        grupo = con_clave or candidatas
+        if not grupo:
+            return {"titulo": "", "numero": ""}
+        titular = max(grupo, key=lambda l: l["y1"] - l["y0"])     # la letra más grande
+        titulo = _con_espacios(motor, cabecera, titular)
+
+        # El número suele estar en el título o en las líneas que lo rodean
+        posicion = lineas.index(titular)
+        cercanas = [titular] + lineas[posicion + 1:posicion + 6] + lineas[max(0, posicion - 3):posicion]
+        numero = ""
+        for linea in cercanas:
+            texto = titulo if linea is titular else _con_espacios(motor, cabecera, linea)
+            for hallado in PATRON_NUMERO.finditer(texto):
+                valor = hallado.group(1).strip(" .-")
+                if sum(c.isdigit() for c in valor) >= 2:
+                    numero = valor
+                    break
+            if numero:
+                # Si el número estaba dentro del título ("Certificado N° 123"), no se repite
+                if linea is titular:
+                    titulo = PATRON_NUMERO.sub("", titulo).strip(" .:-")
+                break
+    return {"titulo": titulo, "numero": numero}
+
+
+INSTRUCCION_GEMINI = (
+    "Esta imagen es la primera hoja de un certificado de un material (certificado de calidad, "
+    "de análisis, de conformidad o similar). Lee SOLO el encabezado y responde SOLO un JSON con "
+    'dos claves: "titulo" (el título del documento tal como está impreso, por ejemplo '
+    '"CERTIFICADO DE ANÁLISIS"; no es el nombre de la empresa) y "numero" (el número o código '
+    'del certificado que aparece junto al título; "" si no aparece). Copia los valores tal '
+    "como están escritos. No inventes nada."
 )
 
 
-def consultar_gemini(jpg):
+def leer_encabezado_gemini(jpg):
     url = ("https://generativelanguage.googleapis.com/v1beta/models/"
            f"{CONFIG['gemini_modelo']}:generateContent")
     cuerpo = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": "image/jpeg",
                              "data": base64.b64encode(jpg).decode("ascii")}},
-            {"text": INSTRUCCION_IA},
+            {"text": INSTRUCCION_GEMINI},
         ]}],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0},
     }
@@ -573,31 +893,48 @@ def consultar_gemini(jpg):
     texto = "".join(p.get("text", "") for p in partes if not p.get("thought"))
     coincidencia = re.search(r"\{.*\}", texto, re.S)
     resultado = json.loads(coincidencia.group(0) if coincidencia else texto)
-    return {clave: str(resultado.get(clave) or "").strip()
-            for clave in ("proveedor", "material", "numero_certificado", "lote", "fecha")}
+    return {clave: str(resultado.get(clave) or "").strip() for clave in ("titulo", "numero")}
+
+
+def armar_nombre(titulo, numero):
+    titulo, numero = limpiar_nombre(titulo, 70), limpiar_nombre(numero, 30)
+    if titulo and numero:
+        return f"{titulo} N° {numero}"
+    return titulo or numero
 
 
 @app.post("/api/ia")
 def api_ia():
-    if not CONFIG.get("gemini_api_key"):
-        abort(400, "La IA no está configurada")
+    motor = motor_ia()
+    if not motor:
+        abort(400, "La lectura automática no está instalada en el servidor")
     cuerpo = request.get_json(force=True)
     carpeta = carpeta_sesion(cuerpo.get("sesion"))
     ruta = carpeta / f"{validar_id(cuerpo.get('id'))}.jpg"
     if not ruta.exists():
         abort(404, "No se encontró la hoja")
     imagen = leer_imagen(ruta)
-    factor = min(1.0, 1800.0 / max(imagen.shape[:2]))
-    if factor < 1:
-        imagen = cv2.resize(imagen, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
-    _, jpg = cv2.imencode(".jpg", imagen, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    aviso = ""
+    if motor == "gemini":
+        factor = min(1.0, 1800.0 / max(imagen.shape[:2]))
+        chica = imagen if factor == 1.0 else cv2.resize(
+            imagen, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+        _, jpg = cv2.imencode(".jpg", chica, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        try:
+            leido = leer_encabezado_gemini(jpg.tobytes())
+            return jsonify({"ok": True, "origen": "gemini",
+                            "nombre": armar_nombre(leido["titulo"], leido["numero"])})
+        except Exception as error:
+            aviso = f"Gemini no respondió ({error})"
+            print(f"[IA] {aviso}")
+            if importlib.util.find_spec("rapidocr_onnxruntime") is None:
+                return jsonify({"ok": False, "error": aviso}), 502
     try:
-        return jsonify({"ok": True, **consultar_gemini(jpg.tobytes())})
-    except urllib.error.HTTPError as error:
-        detalle = error.read().decode("utf-8", "ignore")[:300]
-        return jsonify({"ok": False, "error": f"Gemini respondió {error.code}: {detalle}"}), 502
+        leido = leer_encabezado_local(imagen, cuerpo.get("proveedor") or "")
     except Exception as error:
-        return jsonify({"ok": False, "error": f"No se pudo consultar a Gemini: {error}"}), 502
+        return jsonify({"ok": False, "error": f"No se pudo leer el encabezado: {error}"}), 500
+    return jsonify({"ok": True, "origen": "local", "aviso": aviso,
+                    "nombre": armar_nombre(leido["titulo"], leido["numero"])})
 
 
 @app.errorhandler(400)
@@ -621,13 +958,18 @@ def ip_local():
 if __name__ == "__main__":
     limpiar_temporales()
     puerto = int(CONFIG["puerto"])
-    print("=" * 62)
+    lectura = {"gemini": "Gemini (envía la hoja 1 a Google)",
+               "local": "en esta PC (nada sale de la empresa)",
+               "": "no instalada (pip install rapidocr-onnxruntime)"}[motor_ia()]
+    print("=" * 66)
     print("  ESCÁNER DE CERTIFICADOS")
     print(f"  En los celulares abre:  http://{ip_local()}:{puerto}")
     print("  Los PDF se guardan en:")
     for destino in CONFIG["carpetas_destino"]:
         print(f"     - {destino}")
-    print(f"  Lectura con IA (Gemini): {'activada' if CONFIG.get('gemini_api_key') else 'apagada'}")
+    print("       ordenados como  año / fecha / proveedor / certificado.pdf")
+    print(f"  Lectura del encabezado: {lectura}")
+    print(f"  Proveedores cargados: {len(leer_proveedores())}")
     print("  Para detener: Ctrl + C")
-    print("=" * 62)
+    print("=" * 66)
     app.run(host="0.0.0.0", port=puerto, threaded=True)

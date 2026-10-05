@@ -2,35 +2,56 @@ ESCÁNER DE CERTIFICADOS DE MATERIALES
 =====================================
 
 INSTALAR (una sola vez, en la PC que hará de servidor) - Git Bash:
-    cd ruta/a/escaner-certificados
+    cd ~/Documents/escaner-certificados
     pip install -r requirements.txt
 
 USAR:
     python servidor.py
   La ventana muestra la dirección, por ejemplo  http://192.168.1.50:5050
-  Ábrela en Chrome desde el celular (conectado al Wi-Fi de la empresa).
-  En Chrome: menú > "Agregar a pantalla principal" para dejarla como app.
+  Ábrela desde la app (o desde Chrome) con el celular en el Wi-Fi de la empresa.
 
-  1. "+"  -> toma la foto de la hoja.
-  2. Revisa los 4 puntos en las esquinas (se detectan solos; se pueden arrastrar).
-  3. "Guardar hoja". Repite con "+" para cada hoja.
-  4. "Crear PDF" -> se guarda en las carpetas configuradas.
+  1. Elige el proveedor (la lista se arma desde la misma app).
+  2. "+"  -> toma la foto de la hoja y revisa las 4 esquinas.
+  3. "Guardar hoja". El nombre del certificado se lee solo del encabezado
+     de la hoja 1; se puede corregir a mano.
+  4. Repite con "+" para cada hoja y presiona "Guardar PDF".
 
-CONFIGURAR (archivo config.json, se crea solo la primera vez que se ejecuta):
+DÓNDE QUEDA CADA PDF:
+    carpeta destino / año / fecha / proveedor / nombre del certificado.pdf
+    Ejemplo:  Certificados de Materiales / 2026 / 2026-10-05 / Química del Norte S.A.C /
+              CERTIFICADO DE ANÁLISIS N° 2026-004512.pdf
+
+CALENDARIO (botón de fecha, arriba a la derecha):
+  - Al abrir la app siempre está en el día de hoy.
+  - Al elegir otro día se ven los certificados de esa fecha por proveedor,
+    y lo que se guarde va a esa fecha hasta volver a "hoy".
+  - Los días con un punto verde tienen certificados.
+
+PROVEEDORES:
+  - En la app: Proveedor -> escribe el nombre -> "Agregar a la lista".
+  - "Quitar proveedores" los saca de la lista (no borra los PDF guardados).
+  - La lista vive en proveedores.json, al lado de servidor.py, y la comparten
+    todos los celulares. También se puede editar ese archivo a mano.
+
+LECTURA DEL ENCABEZADO (nombre del certificado):
+  - Por defecto la hace esta PC (paquete rapidocr-onnxruntime). Nada sale de
+    la empresa. No escribe tildes (ANÁLISIS sale como ANALISIS).
+  - Opcional: con una clave en "gemini_api_key" (config.json) la hace Gemini,
+    que lee mejor, pero la imagen de la hoja 1 se envía a Google.
+    Consúltalo con TI antes de activarlo.
+  - Si no se instala rapidocr-onnxruntime, la app funciona igual y el nombre
+    se escribe a mano.
+
+CONFIGURAR (config.json, se crea solo la primera vez):
   carpetas_destino  Lista de carpetas. Para que llegue a varias PCs, agrega
                     carpetas compartidas de red. Ejemplo:
                     ["C:\\Users\\yo\\Desktop\\Certificados de Materiales",
                      "\\\\PC-ALMACEN\\Certificados"]
-  subcarpetas       Orden dentro de cada destino. Por defecto "{anio}/{mes}".
-                    Variables: {anio} {mes} {dia} {proveedor}
-                    Ejemplo: "{proveedor}/{anio}"
+                    El calendario lee de la primera carpeta disponible.
   formato_hoja      "A4" entrega cada hoja con proporción exacta de A4.
                     "libre" respeta la proporción medida en la foto.
   lado_maximo_px    Resolución de cada hoja (2480 = A4 a ~210 dpi).
-  gemini_api_key    Opcional. Si pones una clave de Gemini aparece el botón
-                    "Leer datos de la hoja 1 con IA", que propone proveedor,
-                    material, N° de certificado y lote. La imagen de esa hoja
-                    se envía a Google: consúltalo con TI antes de activarlo.
+  gemini_api_key    Ver "Lectura del encabezado".
   Después de cambiar config.json hay que cerrar y volver a abrir el servidor.
 
 NOTAS:
@@ -39,18 +60,14 @@ NOTAS:
     (al lado de servidor.py) y las hojas no se borran del celular.
   - Usa el puerto 5050, así no choca con la app de fotos.
 
-APK PARA ANDROID (opcional)
-===========================
-La carpeta android/ es una app mínima que abre la misma página del servidor
-y lanza la cámara directamente. GitHub la compila sola:
+APK PARA ANDROID
+================
+La carpeta android/ es una app mínima que abre la página del servidor y lanza
+la cámara directamente. GitHub la compila sola en cada "git push" que cambie
+esa carpeta, y deja el archivo en Releases.
 
-  1. Sube esta carpeta completa a un repositorio de GitHub (incluida .github).
-  2. En la pestaña Actions espera a que "Compilar APK" termine en verde.
-  3. En Releases descarga escaner-certificados.apk e instálalo en el celular.
-  4. Al abrir la app por primera vez escribe la dirección del servidor,
-     por ejemplo 192.168.1.50:5050. Con el botón Atrás del celular se puede
-     recargar o cambiar esa dirección.
-
-  La app no trae la página dentro: la carga desde la PC. Por eso los cambios
-  en index.html o servidor.py se ven al instante, sin volver a instalar el APK.
-  Si alguna vez instalas un APK nuevo, desinstala antes el anterior.
+  La app no trae la página dentro: la carga desde la PC. Los cambios en
+  index.html o servidor.py se ven al instante, sin reinstalar el APK.
+  Para instalar un APK nuevo (por ejemplo, por el icono) hay que desinstalar
+  antes el anterior. Con el botón Atrás del celular se puede recargar o
+  cambiar la dirección del servidor.

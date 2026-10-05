@@ -12,7 +12,7 @@
     <!-- usesCleartextTraffic: el servidor de la PC se abre por http dentro de la red -->
     <application
         android:allowBackup="false"
-        android:icon="@drawable/icono"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/nombre_app"
         android:theme="@style/Tema"
         android:usesCleartextTraffic="true">

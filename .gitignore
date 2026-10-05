@@ -1,5 +1,6 @@
-# Datos locales del servidor (config.json puede tener la clave de Gemini)
+# Datos locales del servidor (no se suben a GitHub)
 config.json
+proveedores.json
 _temporal/
 _pendientes/
 __pycache__/
