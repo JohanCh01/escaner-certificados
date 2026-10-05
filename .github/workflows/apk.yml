@@ -1,0 +1,41 @@
+name: Compilar APK
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'android/**'
+      - '.github/workflows/apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compilar
+        working-directory: android
+        run: |
+          export JAVA_HOME="${JAVA_HOME_17_X64:-$JAVA_HOME}"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" > /dev/null || true
+          bash ./gradlew --no-daemon assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/escaner-certificados.apk"
+
+      - name: Guardar el APK en la ejecución
+        uses: actions/upload-artifact@v7
+        with:
+          name: escaner-certificados-apk
+          path: escaner-certificados.apk
+
+      - name: Publicar en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.${{ github.run_number }}" escaner-certificados.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Escáner de certificados v1.${{ github.run_number }}" \
+            --notes "Descarga escaner-certificados.apk desde el celular e instálalo."

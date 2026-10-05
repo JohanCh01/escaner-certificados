@@ -1,0 +1,56 @@
+ESCÁNER DE CERTIFICADOS DE MATERIALES
+=====================================
+
+INSTALAR (una sola vez, en la PC que hará de servidor) - Git Bash:
+    cd ruta/a/escaner-certificados
+    pip install -r requirements.txt
+
+USAR:
+    python servidor.py
+  La ventana muestra la dirección, por ejemplo  http://192.168.1.50:5050
+  Ábrela en Chrome desde el celular (conectado al Wi-Fi de la empresa).
+  En Chrome: menú > "Agregar a pantalla principal" para dejarla como app.
+
+  1. "+"  -> toma la foto de la hoja.
+  2. Revisa los 4 puntos en las esquinas (se detectan solos; se pueden arrastrar).
+  3. "Guardar hoja". Repite con "+" para cada hoja.
+  4. "Crear PDF" -> se guarda en las carpetas configuradas.
+
+CONFIGURAR (archivo config.json, se crea solo la primera vez que se ejecuta):
+  carpetas_destino  Lista de carpetas. Para que llegue a varias PCs, agrega
+                    carpetas compartidas de red. Ejemplo:
+                    ["C:\\Users\\yo\\Desktop\\Certificados de Materiales",
+                     "\\\\PC-ALMACEN\\Certificados"]
+  subcarpetas       Orden dentro de cada destino. Por defecto "{anio}/{mes}".
+                    Variables: {anio} {mes} {dia} {proveedor}
+                    Ejemplo: "{proveedor}/{anio}"
+  formato_hoja      "A4" entrega cada hoja con proporción exacta de A4.
+                    "libre" respeta la proporción medida en la foto.
+  lado_maximo_px    Resolución de cada hoja (2480 = A4 a ~210 dpi).
+  gemini_api_key    Opcional. Si pones una clave de Gemini aparece el botón
+                    "Leer datos de la hoja 1 con IA", que propone proveedor,
+                    material, N° de certificado y lote. La imagen de esa hoja
+                    se envía a Google: consúltalo con TI antes de activarlo.
+  Después de cambiar config.json hay que cerrar y volver a abrir el servidor.
+
+NOTAS:
+  - La PC del servidor debe estar encendida y con servidor.py abierto.
+  - Si ningún destino responde, el PDF queda en la carpeta _pendientes
+    (al lado de servidor.py) y las hojas no se borran del celular.
+  - Usa el puerto 5050, así no choca con la app de fotos.
+
+APK PARA ANDROID (opcional)
+===========================
+La carpeta android/ es una app mínima que abre la misma página del servidor
+y lanza la cámara directamente. GitHub la compila sola:
+
+  1. Sube esta carpeta completa a un repositorio de GitHub (incluida .github).
+  2. En la pestaña Actions espera a que "Compilar APK" termine en verde.
+  3. En Releases descarga escaner-certificados.apk e instálalo en el celular.
+  4. Al abrir la app por primera vez escribe la dirección del servidor,
+     por ejemplo 192.168.1.50:5050. Con el botón Atrás del celular se puede
+     recargar o cambiar esa dirección.
+
+  La app no trae la página dentro: la carga desde la PC. Por eso los cambios
+  en index.html o servidor.py se ven al instante, sin volver a instalar el APK.
+  Si alguna vez instalas un APK nuevo, desinstala antes el anterior.

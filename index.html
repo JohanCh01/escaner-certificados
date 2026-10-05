@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#1f3d2b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icono.png">
+<title>Escáner de certificados</title>
+<style>
+  :root {
+    --fondo: #f4f5f2; --tarjeta: #ffffff; --tinta: #17201a; --suave: #66706a;
+    --linea: #dfe3dc; --verde: #1f3d2b; --acento: #2e7d4f; --acento-osc: #24643f;
+    --rojo: #b3392f; --radio: 14px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--fondo); color: var(--tinta);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior-y: contain;
+  }
+  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+  header {
+    background: var(--verde); color: #fff; padding: 14px 16px;
+    padding-top: calc(14px + env(safe-area-inset-top));
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+  header p { margin: 2px 0 0; font-size: 12.5px; opacity: .75; overflow-wrap: anywhere; }
+  main { padding: 16px 16px 120px; max-width: 720px; margin: 0 auto; }
+
+  .tarjeta { background: var(--tarjeta); border: 1px solid var(--linea); border-radius: var(--radio); padding: 14px; }
+  label { display: block; font-size: 13px; font-weight: 600; color: var(--suave); margin-bottom: 4px; }
+  input[type=text] {
+    width: 100%; padding: 12px; font: inherit; color: inherit; background: #fff;
+    border: 1px solid var(--linea); border-radius: 10px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--acento); box-shadow: 0 0 0 3px rgba(46,125,79,.15); }
+  .campo + .campo { margin-top: 12px; }
+  .btn-ia {
+    margin-top: 12px; width: 100%; padding: 11px; border-radius: 10px; font-weight: 600;
+    border: 1px solid var(--acento); color: var(--acento-osc); background: #eef6f0;
+  }
+  .btn-ia[disabled] { opacity: .5; }
+
+  h2 { font-size: 14px; margin: 22px 2px 10px; color: var(--suave); font-weight: 650;
+       text-transform: uppercase; letter-spacing: .6px; display: flex; justify-content: space-between; }
+  .hojas { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 12px; }
+  .hoja, .mas {
+    position: relative; aspect-ratio: 210 / 297; border-radius: 10px; overflow: hidden;
+    background: #fff; border: 1px solid var(--linea);
+  }
+  .hoja img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .hoja .num {
+    position: absolute; left: 6px; top: 6px; min-width: 24px; height: 24px; padding: 0 6px;
+    border-radius: 12px; background: var(--verde); color: #fff; font-size: 13px; font-weight: 700;
+    display: grid; place-items: center;
+  }
+  .mas {
+    border: 2px dashed #a9b5ad; background: transparent; color: var(--acento-osc);
+    display: grid; place-items: center; align-content: center; gap: 2px; font-weight: 600; font-size: 13px;
+  }
+  .mas span { font-size: 44px; line-height: 1; font-weight: 300; }
+  .vacio .mas { grid-column: 1 / -1; aspect-ratio: auto; padding: 44px 10px; font-size: 15px; }
+  .galeria { display: block; margin: 12px auto 0; padding: 8px; color: var(--suave); font-size: 14px; text-decoration: underline; }
+
+  .barra {
+    position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    background: rgba(244,245,242,.94); backdrop-filter: blur(8px); border-top: 1px solid var(--linea);
+  }
+  .principal {
+    display: block; width: 100%; max-width: 688px; margin: 0 auto; padding: 15px; border-radius: 12px;
+    background: var(--acento); color: #fff; font-weight: 650; font-size: 16px;
+  }
+  .principal:active { background: var(--acento-osc); }
+  .principal[disabled] { background: #b9c2bb; }
+
+  /* ---------- Pantallas completas ---------- */
+  .pantalla { position: fixed; inset: 0; background: #101512; color: #fff; display: none; flex-direction: column; z-index: 10; }
+  .pantalla.abierta { display: flex; }
+  .pantalla .top {
+    padding: 12px 16px; padding-top: calc(12px + env(safe-area-inset-top));
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600;
+  }
+  .pantalla .top small { display: block; font-weight: 400; opacity: .7; font-size: 12.5px; }
+  .escenario { flex: 1; position: relative; min-height: 0; touch-action: none; }
+  .marco { position: absolute; }
+  .marco img { width: 100%; height: 100%; display: block; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+  .marco svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  .marco polygon { fill: rgba(70,200,120,.16); stroke: #5fe39a; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+  .punto {
+    position: absolute; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%;
+    display: grid; place-items: center; touch-action: none;
+  }
+  .punto::after {
+    content: ""; width: 26px; height: 26px; border-radius: 50%;
+    background: rgba(95,227,154,.35); border: 3px solid #fff; box-shadow: 0 0 0 1.5px #1f3d2b;
+  }
+  #lupa {
+    position: absolute; top: 10px; left: 10px; width: 124px; height: 124px; border-radius: 50%;
+    border: 3px solid #fff; box-shadow: 0 4px 16px rgba(0,0,0,.5); display: none; z-index: 3; background: #000;
+  }
+  .controles { padding: 12px 16px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); background: #18201b; }
+  .filtros { display: flex; gap: 8px; margin-bottom: 12px; }
+  .filtros button {
+    flex: 1; padding: 10px 4px; border-radius: 10px; font-size: 14px; font-weight: 600;
+    background: #26302a; color: #cfd8d2;
+  }
+  .filtros button.activo { background: #5fe39a; color: #0f2a1b; }
+  .fila { display: flex; gap: 10px; }
+  .fila button { flex: 1; padding: 14px 8px; border-radius: 12px; font-weight: 650; }
+  .secundario { background: #26302a; color: #fff; }
+  .confirmar { background: var(--acento); color: #fff; flex: 1.6 !important; }
+  .peligro { background: #3a2220; color: #ffb4ab; }
+  .icono-btn { width: 44px; height: 44px; border-radius: 50%; background: #26302a; font-size: 20px; }
+
+  #vista .escenario { display: grid; place-items: center; padding: 8px; touch-action: auto; overflow: auto; }
+  #vista img { max-width: 100%; max-height: 100%; background: #fff; border-radius: 4px; }
+
+  /* ---------- Mensajes ---------- */
+  #cargando {
+    position: fixed; inset: 0; z-index: 30; background: rgba(16,21,18,.72); color: #fff;
+    display: none; place-items: center; align-content: center; gap: 14px; text-align: center; padding: 24px;
+  }
+  #cargando.abierta { display: grid; }
+  .rueda { width: 42px; height: 42px; border-radius: 50%; border: 4px solid rgba(255,255,255,.25); border-top-color: #fff; animation: giro .8s linear infinite; }
+  @keyframes giro { to { transform: rotate(360deg); } }
+  #aviso {
+    position: fixed; left: 16px; right: 16px; bottom: 96px; z-index: 40; max-width: 688px; margin: 0 auto;
+    padding: 14px 16px; border-radius: 12px; background: #17201a; color: #fff; font-size: 14.5px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.25); display: none; overflow-wrap: anywhere;
+  }
+  #aviso.ok { background: #1f5c3a; } #aviso.error { background: var(--rojo); }
+  #aviso b { display: block; margin-bottom: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Escáner de certificados</h1>
+  <p id="destino">Conectando con el servidor…</p>
+</header>
+
+<main>
+  <div class="tarjeta">
+    <div class="campo">
+      <label for="proveedor">Proveedor</label>
+      <input type="text" id="proveedor" list="proveedores" autocomplete="off" placeholder="Ej. Envases del Norte">
+      <datalist id="proveedores"></datalist>
+    </div>
+    <div class="campo">
+      <label for="nombre">Material / N° de certificado</label>
+      <input type="text" id="nombre" autocomplete="off" placeholder="Ej. Caja 5 kg - Cert 00123">
+    </div>
+    <button class="btn-ia" id="btnIA" hidden>Leer datos de la hoja 1 con IA</button>
+  </div>
+
+  <h2><span>Hojas</span><span id="cuenta"></span></h2>
+  <div class="hojas" id="hojas"></div>
+  <button class="galeria" id="btnGaleria">o elegir una foto de la galería</button>
+</main>
+
+<div class="barra">
+  <button class="principal" id="btnPDF" disabled>Crear PDF</button>
+</div>
+
+<input type="file" id="camara" accept="image/*" capture="environment" hidden>
+<input type="file" id="galeria" accept="image/*" hidden>
+
+<!-- Ajuste de esquinas -->
+<section class="pantalla" id="ajuste">
+  <div class="top">
+    <div><span id="tituloAjuste">Hoja</span><small id="notaAjuste">Arrastra los puntos a las esquinas de la hoja</small></div>
+    <button class="icono-btn" id="btnGirar" aria-label="Girar">⟳</button>
+  </div>
+  <div class="escenario" id="escenario">
+    <canvas id="lupa" width="248" height="248"></canvas>
+    <div class="marco" id="marco">
+      <img id="foto" alt="">
+      <svg viewBox="0 0 1000 1000" preserveAspectRatio="none"><polygon id="poligono"></polygon></svg>
+      <div class="punto" data-i="0"></div><div class="punto" data-i="1"></div>
+      <div class="punto" data-i="2"></div><div class="punto" data-i="3"></div>
+    </div>
+  </div>
+  <div class="controles">
+    <div class="filtros" id="filtros">
+      <button data-f="color" class="activo">Color</button>
+      <button data-f="gris">Gris</button>
+      <button data-f="original">Sin retoque</button>
+    </div>
+    <div class="fila">
+      <button class="secundario" id="btnRepetir">Repetir foto</button>
+      <button class="confirmar" id="btnGuardar">Guardar hoja</button>
+    </div>
+  </div>
+</section>
+
+<!-- Vista de una hoja ya escaneada -->
+<section class="pantalla" id="vista">
+  <div class="top">
+    <div id="tituloVista">Hoja</div>
+    <button class="icono-btn" id="btnCerrarVista" aria-label="Cerrar">✕</button>
+  </div>
+  <div class="escenario"><img id="imgVista" alt=""></div>
+  <div class="controles">
+    <div class="fila" style="margin-bottom:10px">
+      <button class="secundario" id="btnAntes">◀ Mover antes</button>
+      <button class="secundario" id="btnDespues">Mover después ▶</button>
+    </div>
+    <div class="fila">
+      <button class="peligro" id="btnEliminar">Eliminar</button>
+      <button class="secundario" id="btnReajustar">Reajustar esquinas</button>
+    </div>
+  </div>
+</section>
+
+<div id="cargando"><div class="rueda"></div><div id="textoCargando">Procesando…</div></div>
+<div id="aviso"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const CLAVE = "escaner-certificados";
+
+// ---------- Estado (se guarda en el celular para no perder hojas si se recarga) ----------
+let estado = { sesion: nuevaSesion(), paginas: [], proveedor: "", nombre: "" };
+let ajuste = null;        // hoja que se está ajustando
+let vistaIndice = -1;
+let giroVisual = 0;
+
+function nuevaSesion() {
+  const b = new Uint8Array(8);
+  (window.crypto || window.msCrypto).getRandomValues(b);
+  return Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+}
+function guardarEstado() {
+  try { localStorage.setItem(CLAVE, JSON.stringify(estado)); } catch (e) {}
+}
+function leerLocal(clave, defecto) {
+  try { return JSON.parse(localStorage.getItem(clave)) || defecto; } catch (e) { return defecto; }
+}
+
+// ---------- Utilidades ----------
+function cargando(texto) {
+  if (texto) { $("textoCargando").textContent = texto; $("cargando").classList.add("abierta"); }
+  else $("cargando").classList.remove("abierta");
+}
+let temporizadorAviso;
+function aviso(titulo, detalle, tipo, ms) {
+  const caja = $("aviso");
+  caja.className = tipo || "";
+  caja.innerHTML = "";
+  const b = document.createElement("b"); b.textContent = titulo; caja.appendChild(b);
+  if (detalle) caja.appendChild(document.createTextNode(detalle));
+  caja.style.display = "block";
+  clearTimeout(temporizadorAviso);
+  temporizadorAviso = setTimeout(() => caja.style.display = "none", ms || 5000);
+}
+async function api(ruta, opciones) {
+  let respuesta;
+  try { respuesta = await fetch(ruta, opciones); }
+  catch (e) { throw new Error("No hay conexión con el servidor. Revisa el Wi-Fi y que la PC esté encendida."); }
+  let datos = {};
+  try { datos = await respuesta.json(); } catch (e) {}
+  if (!respuesta.ok && !datos.pendiente) throw new Error(datos.error || ("Error " + respuesta.status));
+  return datos;
+}
+const postJSON = (ruta, cuerpo) => api(ruta, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo) });
+const urlHoja = (p, extra) => `/api/pagina/${estado.sesion}/${p.id}.jpg?v=${p.v}${extra || ""}`;
+
+// ---------- Lista de hojas ----------
+function pintar() {
+  const caja = $("hojas");
+  caja.innerHTML = "";
+  caja.classList.toggle("vacio", estado.paginas.length === 0);
+  estado.paginas.forEach((p, i) => {
+    const div = document.createElement("button");
+    div.className = "hoja";
+    div.innerHTML = `<img alt="Hoja ${i + 1}" loading="lazy"><span class="num">${i + 1}</span>`;
+    div.querySelector("img").src = urlHoja(p, "&mini=1");
+    div.onclick = () => abrirVista(i);
+    caja.appendChild(div);
+  });
+  const mas = document.createElement("button");
+  mas.className = "mas"; mas.id = "btnMas";
+  mas.innerHTML = estado.paginas.length
+    ? "<span>+</span>Otra hoja"
+    : "<span>+</span>Escanear la primera hoja";
+  mas.onclick = () => $("camara").click();
+  caja.appendChild(mas);
+
+  const n = estado.paginas.length;
+  $("cuenta").textContent = n ? (n + (n === 1 ? " hoja" : " hojas")) : "";
+  $("btnPDF").disabled = n === 0;
+  $("btnPDF").textContent = n ? `Crear PDF (${n} ${n === 1 ? "hoja" : "hojas"})` : "Crear PDF";
+  $("btnIA").disabled = n === 0;
+  guardarEstado();
+}
+
+// ---------- Tomar foto ----------
+async function prepararFoto(archivo) {
+  // Reduce a 3200 px y corrige la orientación: sube más rápido sin perder calidad de escaneo
+  try {
+    const mapa = await createImageBitmap(archivo, { imageOrientation: "from-image" });
+    const factor = Math.min(1, 3200 / Math.max(mapa.width, mapa.height));
+    const lienzo = document.createElement("canvas");
+    lienzo.width = Math.round(mapa.width * factor);
+    lienzo.height = Math.round(mapa.height * factor);
+    lienzo.getContext("2d").drawImage(mapa, 0, 0, lienzo.width, lienzo.height);
+    const blob = await new Promise(ok => lienzo.toBlob(ok, "image/jpeg", 0.93));
+    if (blob) return blob;
+  } catch (e) {}
+  return archivo;
+}
+
+async function recibirFoto(archivo) {
+  if (!archivo) return;
+  cargando("Buscando los bordes de la hoja…");
+  try {
+    const blob = await prepararFoto(archivo);
+    const formulario = new FormData();
+    formulario.append("sesion", estado.sesion);
+    formulario.append("foto", blob, "foto.jpg");
+    const r = await api("/api/subir", { method: "POST", body: formulario });
+    abrirAjuste({
+      id: r.id, esquinas: r.esquinas, filtro: leerLocal(CLAVE + "-filtro", "color"), rotar: 0,
+      src: URL.createObjectURL(blob), nueva: true, detectado: r.detectado,
+      numero: estado.paginas.length + 1 });
+  } catch (e) {
+    aviso("No se pudo subir la foto", e.message, "error", 7000);
+  } finally { cargando(); }
+}
+$("camara").onchange = e => { recibirFoto(e.target.files[0]); e.target.value = ""; };
+$("galeria").onchange = e => { recibirFoto(e.target.files[0]); e.target.value = ""; };
+$("btnGaleria").onclick = () => $("galeria").click();
+
+// ---------- Ajuste de esquinas ----------
+const foto = $("foto"), marco = $("marco"), escenario = $("escenario"), lupa = $("lupa");
+
+function abrirAjuste(datos) {
+  ajuste = datos;
+  $("tituloAjuste").textContent = "Hoja " + datos.numero;
+  $("notaAjuste").textContent = datos.detectado === false
+    ? "No encontré los bordes: lleva cada punto a una esquina"
+    : "Revisa que los puntos estén en las esquinas de la hoja";
+  document.querySelectorAll("#filtros button").forEach(b =>
+    b.classList.toggle("activo", b.dataset.f === ajuste.filtro));
+  foto.onload = () => { acomodarMarco(); dibujarEsquinas(); };
+  foto.src = datos.src;
+  $("ajuste").classList.add("abierta");
+}
+function cerrarAjuste() {
+  $("ajuste").classList.remove("abierta");
+  if (ajuste && ajuste.src.startsWith("blob:")) URL.revokeObjectURL(ajuste.src);
+  ajuste = null;
+}
+function acomodarMarco() {
+  if (!foto.naturalWidth) return;
+  const margen = 30;
+  const w = escenario.clientWidth - margen * 2, h = escenario.clientHeight - margen * 2;
+  const factor = Math.min(w / foto.naturalWidth, h / foto.naturalHeight);
+  const fw = foto.naturalWidth * factor, fh = foto.naturalHeight * factor;
+  marco.style.width = fw + "px"; marco.style.height = fh + "px";
+  marco.style.left = (escenario.clientWidth - fw) / 2 + "px";
+  marco.style.top = (escenario.clientHeight - fh) / 2 + "px";
+}
+function dibujarEsquinas() {
+  if (!ajuste) return;
+  $("poligono").setAttribute("points",
+    ajuste.esquinas.map(p => (p[0] * 1000) + "," + (p[1] * 1000)).join(" "));
+  document.querySelectorAll(".punto").forEach(punto => {
+    const p = ajuste.esquinas[+punto.dataset.i];
+    punto.style.left = (p[0] * 100) + "%"; punto.style.top = (p[1] * 100) + "%";
+  });
+}
+function dibujarLupa(p, clienteX) {
+  const caja = marco.getBoundingClientRect();
+  const ctx = lupa.getContext("2d");
+  const lado = 62 * (foto.naturalWidth / caja.width);   // zona de 62 px de pantalla, ampliada 2x
+  const cx = p[0] * foto.naturalWidth, cy = p[1] * foto.naturalHeight;
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 248, 248);
+  ctx.drawImage(foto, cx - lado / 2, cy - lado / 2, lado, lado, 0, 0, 248, 248);
+  ctx.strokeStyle = "#5fe39a"; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(124, 84); ctx.lineTo(124, 164); ctx.moveTo(84, 124); ctx.lineTo(164, 124); ctx.stroke();
+  // La lupa se va al lado contrario del dedo para que no la tape
+  const izquierda = clienteX > window.innerWidth / 2;
+  lupa.style.left = izquierda ? "10px" : "auto";
+  lupa.style.right = izquierda ? "auto" : "10px";
+  lupa.style.display = "block";
+}
+document.querySelectorAll(".punto").forEach(punto => {
+  const mover = e => {
+    if (!ajuste) return;
+    const caja = marco.getBoundingClientRect();
+    const p = [Math.min(1, Math.max(0, (e.clientX - caja.left) / caja.width)),
+               Math.min(1, Math.max(0, (e.clientY - caja.top) / caja.height))];
+    ajuste.esquinas[+punto.dataset.i] = p;
+    dibujarEsquinas(); dibujarLupa(p, e.clientX);
+  };
+  punto.addEventListener("pointerdown", e => {
+    e.preventDefault(); punto.setPointerCapture(e.pointerId);
+    punto.addEventListener("pointermove", mover); mover(e);
+  });
+  const soltar = () => { punto.removeEventListener("pointermove", mover); lupa.style.display = "none"; };
+  punto.addEventListener("pointerup", soltar);
+  punto.addEventListener("pointercancel", soltar);
+});
+window.addEventListener("resize", () => { acomodarMarco(); dibujarEsquinas(); });
+
+$("filtros").onclick = e => {
+  const f = e.target.dataset.f; if (!f || !ajuste) return;
+  ajuste.filtro = f;
+  try { localStorage.setItem(CLAVE + "-filtro", JSON.stringify(f)); } catch (err) {}
+  document.querySelectorAll("#filtros button").forEach(b => b.classList.toggle("activo", b === e.target));
+};
+$("btnGirar").onclick = () => {
+  if (!ajuste) return;
+  ajuste.rotar = (ajuste.rotar + 90) % 360;
+  aviso("Giro: " + ajuste.rotar + "°", "Se aplicará a la hoja al guardar.", "", 2200);
+};
+$("btnRepetir").onclick = async () => {
+  const anterior = ajuste;
+  cerrarAjuste();
+  if (anterior && anterior.nueva) {
+    fetch(`/api/pagina/${estado.sesion}/${anterior.id}`, { method: "DELETE" }).catch(() => {});
+    $("camara").click();
+  }
+};
+$("btnGuardar").onclick = async () => {
+  if (!ajuste) return;
+  cargando("Enderezando y limpiando la hoja…");
+  try {
+    await postJSON("/api/procesar", { sesion: estado.sesion, id: ajuste.id,
+      esquinas: ajuste.esquinas, filtro: ajuste.filtro, rotar: ajuste.rotar });
+    const registro = { id: ajuste.id, v: Date.now(), esquinas: ajuste.esquinas,
+                       filtro: ajuste.filtro, rotar: ajuste.rotar };
+    const i = estado.paginas.findIndex(p => p.id === ajuste.id);
+    if (i >= 0) estado.paginas[i] = registro; else estado.paginas.push(registro);
+    cerrarAjuste(); pintar();
+  } catch (e) {
+    aviso("No se pudo guardar la hoja", e.message, "error", 7000);
+  } finally { cargando(); }
+};
+
+// ---------- Vista de una hoja ----------
+function abrirVista(i) {
+  vistaIndice = i;
+  $("tituloVista").textContent = `Hoja ${i + 1} de ${estado.paginas.length}`;
+  $("imgVista").src = urlHoja(estado.paginas[i]);
+  $("btnAntes").disabled = i === 0;
+  $("btnDespues").disabled = i === estado.paginas.length - 1;
+  $("btnAntes").style.opacity = i === 0 ? .4 : 1;
+  $("btnDespues").style.opacity = i === estado.paginas.length - 1 ? .4 : 1;
+  $("vista").classList.add("abierta");
+}
+function cerrarVista() { $("vista").classList.remove("abierta"); vistaIndice = -1; }
+function moverHoja(delta) {
+  const j = vistaIndice + delta;
+  if (j < 0 || j >= estado.paginas.length) return;
+  const [p] = estado.paginas.splice(vistaIndice, 1);
+  estado.paginas.splice(j, 0, p);
+  pintar(); abrirVista(j);
+}
+$("btnCerrarVista").onclick = cerrarVista;
+$("btnAntes").onclick = () => moverHoja(-1);
+$("btnDespues").onclick = () => moverHoja(1);
+$("btnEliminar").onclick = () => {
+  if (!confirm("¿Eliminar esta hoja?")) return;
+  const [p] = estado.paginas.splice(vistaIndice, 1);
+  fetch(`/api/pagina/${estado.sesion}/${p.id}`, { method: "DELETE" }).catch(() => {});
+  cerrarVista(); pintar();
+};
+$("btnReajustar").onclick = () => {
+  const p = estado.paginas[vistaIndice], numero = vistaIndice + 1;
+  cerrarVista();
+  abrirAjuste({ id: p.id, esquinas: p.esquinas.map(e => e.slice()), filtro: p.filtro, rotar: p.rotar,
+    src: urlHoja(p, "&original=1"), nueva: false, numero });
+};
+
+// ---------- Datos y PDF ----------
+$("proveedor").oninput = e => { estado.proveedor = e.target.value; guardarEstado(); };
+$("nombre").oninput = e => { estado.nombre = e.target.value; guardarEstado(); };
+
+function pintarProveedores() {
+  $("proveedores").innerHTML = "";
+  leerLocal(CLAVE + "-proveedores", []).forEach(nombre => {
+    const o = document.createElement("option"); o.value = nombre; $("proveedores").appendChild(o);
+  });
+}
+
+$("btnIA").onclick = async () => {
+  if (!estado.paginas.length) return;
+  cargando("Leyendo el certificado…");
+  try {
+    const r = await postJSON("/api/ia", { sesion: estado.sesion, id: estado.paginas[0].id });
+    const partes = [r.material, r.numero_certificado && ("Cert " + r.numero_certificado),
+                    r.lote && ("Lote " + r.lote)].filter(Boolean);
+    if (r.proveedor) { $("proveedor").value = estado.proveedor = r.proveedor; }
+    if (partes.length) { $("nombre").value = estado.nombre = partes.join(" - "); }
+    guardarEstado();
+    if (r.proveedor || partes.length) aviso("Datos leídos", "Revísalos antes de crear el PDF.", "ok");
+    else aviso("No encontré datos claros", "Escríbelos a mano.", "");
+  } catch (e) {
+    aviso("La lectura con IA falló", e.message, "error", 7000);
+  } finally { cargando(); }
+};
+
+$("btnPDF").onclick = async () => {
+  if (!estado.paginas.length) return;
+  cargando("Creando el PDF…");
+  try {
+    const r = await postJSON("/api/pdf", { sesion: estado.sesion,
+      paginas: estado.paginas.map(p => p.id), proveedor: estado.proveedor, nombre: estado.nombre });
+    if (!r.ok) {
+      aviso("El PDF no llegó a la carpeta destino",
+        "Quedó guardado en la PC del servidor (carpeta _pendientes). Avisa para revisar la carpeta de destino.",
+        "error", 12000);
+      return;
+    }
+    const proveedor = estado.proveedor.trim();
+    if (proveedor) {
+      const lista = leerLocal(CLAVE + "-proveedores", []).filter(x => x !== proveedor);
+      lista.unshift(proveedor);
+      try { localStorage.setItem(CLAVE + "-proveedores", JSON.stringify(lista.slice(0, 40))); } catch (e) {}
+      pintarProveedores();
+    }
+    let detalle = `${r.archivo} · ${r.hojas} ${r.hojas === 1 ? "hoja" : "hojas"} · ${r.kb} KB`;
+    if (r.errores && r.errores.length)
+      detalle += ` · No se pudo copiar a: ${r.errores.map(e => e.destino).join(", ")}`;
+    aviso("PDF guardado", detalle, r.errores && r.errores.length ? "" : "ok", 8000);
+    estado = { sesion: nuevaSesion(), paginas: [], proveedor: estado.proveedor, nombre: "" };
+    $("nombre").value = "";
+    pintar();
+  } catch (e) {
+    aviso("No se pudo crear el PDF", e.message, "error", 8000);
+  } finally { cargando(); }
+};
+
+// ---------- Arranque ----------
+(async function iniciar() {
+  const previo = leerLocal(CLAVE, null);
+  if (previo && previo.sesion && Array.isArray(previo.paginas)) estado = previo;
+  $("proveedor").value = estado.proveedor || "";
+  $("nombre").value = estado.nombre || "";
+  pintarProveedores();
+  pintar();
+  try {
+    const config = await api("/api/config");
+    const carpetas = config.destinos.map(d => d.split(/[\\/]/).filter(Boolean).pop());
+    $("destino").textContent = "Se guarda en: " + carpetas.join(" · ");
+    $("btnIA").hidden = !config.ia;
+    if (estado.paginas.length) {
+      const r = await api("/api/sesion/" + estado.sesion);
+      const antes = estado.paginas.length;
+      estado.paginas = estado.paginas.filter(p => r.paginas.includes(p.id));
+      if (estado.paginas.length !== antes) pintar();
+    }
+  } catch (e) {
+    $("destino").textContent = "Sin conexión con el servidor";
+    aviso("Sin conexión", e.message, "error", 8000);
+  }
+})();
+</script>
+</body>
+</html>

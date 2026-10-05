@@ -1,0 +1,11 @@
+# Datos locales del servidor (config.json puede tener la clave de Gemini)
+config.json
+_temporal/
+_pendientes/
+__pycache__/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
